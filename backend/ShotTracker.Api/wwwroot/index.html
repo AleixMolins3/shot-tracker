@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shot Tracker</title>
+  <style>
+    body { font-family: sans-serif; margin: 16px; }
+    #pista { width: 100%; max-width: 420px; border: 2px solid #333; display: block; }
+    #taula-stats { border-collapse: collapse; width: 100%; max-width: 420px; margin-top: 8px; }
+    #taula-stats th, #taula-stats td { border-bottom: 1px solid #ccc; padding: 8px; text-align: right; }
+    #taula-stats th:first-child, #taula-stats td:first-child { text-align: left; }
+    .botons { display: flex; gap: 12px; max-width: 420px; }
+    .botons button { flex: 1; padding: 14px; font-size: 18px; }
+  </style>
+</head>
+<body>
+  <h1>Shot Tracker</h1>
+  <canvas id="pista" width="600" height="560"></canvas>
+  <p id="coords">Toca la pista per marcar un tir.</p>
+  <div class="botons">
+    <button id="btn-entra" disabled>Entra</button>
+    <button id="btn-falla" disabled>Falla</button>
+  </div>
+  <p id="missatge"></p>
+  <h2>Estadístiques</h2>
+  <table id="taula-stats">
+    <thead>
+      <tr><th>Zona</th><th>Intents</th><th>Encerts</th><th>%</th></tr>
+    </thead>
+    <tbody id="stats-cos"></tbody>
+  </table>
+
+  <script>
+    const canvas = document.getElementById("pista");
+    const ctx = canvas.getContext("2d");
+    const W = canvas.width;
+    const H = canvas.height;
+
+    const BASKET_X = 0.5;
+    const BASKET_Y = 0.1;
+
+    function dibuixaZona(radi, color) {
+      ctx.beginPath();
+      ctx.ellipse(BASKET_X * W, BASKET_Y * H, radi * W, radi * H, 0, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.strokeStyle = "#8a6d3b";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    function dibuixaPista() {
+      ctx.fillStyle = "#f3e9d2";
+      ctx.fillRect(0, 0, W, H);
+
+      dibuixaZona(0.45, "#ead7ae");
+      dibuixaZona(0.2, "#e0c088");
+
+      ctx.beginPath();
+      ctx.arc(BASKET_X * W, BASKET_Y * H, 10, 0, Math.PI * 2);
+      ctx.strokeStyle = "#d9480f";
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+
+    const coordsText = document.getElementById("coords");
+    const missatge = document.getElementById("missatge");
+    const btnEntra = document.getElementById("btn-entra");
+    const btnFalla = document.getElementById("btn-falla");
+
+    let tirPendent = null;
+    let tirs = [];
+
+    function posicioNormalitzada(event) {
+      const rect = canvas.getBoundingClientRect();
+      const x = (event.clientX - rect.left) / rect.width;
+      const y = (event.clientY - rect.top) / rect.height;
+      return { x, y };
+    }
+
+    function pintaPunt(x, y, color) {
+      ctx.beginPath();
+      ctx.arc(x * W, y * H, 7, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+    }
+
+    function activaBotons(actius) {
+      btnEntra.disabled = !actius;
+      btnFalla.disabled = !actius;
+    }
+
+    function redibuixa() {
+      dibuixaPista();
+
+      for (const tir of tirs) {
+        pintaPunt(tir.x, tir.y, tir.made ? "#2f9e44" : "#e03131");
+      }
+
+      if (tirPendent) {
+        pintaPunt(tirPendent.x, tirPendent.y, "#1c7ed6");
+      }
+    }
+
+    async function carregaTirs() {
+      try {
+        const resposta = await fetch("/shots");
+        if (!resposta.ok) {
+          throw new Error(await resposta.text());
+        }
+        tirs = await resposta.json();
+        redibuixa();
+      } catch (error) {
+        missatge.textContent = "Error carregant els tirs: " + error.message;
+      }
+    }
+
+    const ZONES = ["Sota cistella", "Mitja distància", "Triple"];
+    const statsCos = document.getElementById("stats-cos");
+
+    function afegeixFila(nom, intents, encerts) {
+      const percentatge = intents > 0
+        ? (100 * encerts / intents).toFixed(1) + "%"
+        : "–";
+
+      const fila = document.createElement("tr");
+      for (const valor of [nom, intents, encerts, percentatge]) {
+        const cel = document.createElement("td");
+        cel.textContent = valor;
+        fila.appendChild(cel);
+      }
+      statsCos.appendChild(fila);
+    }
+
+    async function carregaStats() {
+      try {
+        const resposta = await fetch("/stats");
+        if (!resposta.ok) {
+          throw new Error(await resposta.text());
+        }
+        const dades = await resposta.json();
+
+        statsCos.replaceChildren();
+        let totalIntents = 0;
+        let totalEncerts = 0;
+
+        for (const nom of ZONES) {
+          const zona = dades.find(z => z.zone === nom);
+          const intents = zona ? zona.attempts : 0;
+          const encerts = zona ? zona.made : 0;
+
+          totalIntents += intents;
+          totalEncerts += encerts;
+          afegeixFila(nom, intents, encerts);
+        }
+
+        afegeixFila("Total", totalIntents, totalEncerts);
+      } catch (error) {
+        missatge.textContent = "Error carregant les estadístiques: " + error.message;
+      }
+    }
+
+    canvas.addEventListener("pointerdown", (event) => {
+      tirPendent = posicioNormalitzada(event);
+      redibuixa();
+
+      coordsText.textContent =
+        `x = ${tirPendent.x.toFixed(2)}, y = ${tirPendent.y.toFixed(2)}`;
+      activaBotons(true);
+    });
+
+    async function enviaTir(entra) {
+      if (!tirPendent) return;
+
+      const cos = { x: tirPendent.x, y: tirPendent.y, made: entra };
+
+      try {
+        const resposta = await fetch("/shots", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(cos)
+        });
+
+        if (!resposta.ok) {
+          throw new Error(await resposta.text());
+        }
+
+        const guardat = await resposta.json();
+        tirs.push(guardat);
+
+        tirPendent = null;
+        activaBotons(false);
+        redibuixa();
+        carregaStats();
+
+        missatge.textContent =
+          `Tir #${guardat.id} guardat (${entra ? "entra" : "falla"}).`;
+      } catch (error) {
+        missatge.textContent = "Error: " + error.message;
+      }
+    }
+
+    btnEntra.addEventListener("click", () => enviaTir(true));
+    btnFalla.addEventListener("click", () => enviaTir(false));
+
+    carregaStats();
+    carregaTirs();
+
+    dibuixaPista();
+  </script>
+</body>
+</html>
